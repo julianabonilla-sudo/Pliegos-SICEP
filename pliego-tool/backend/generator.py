@@ -296,8 +296,6 @@ def _construir_marcadores(data: dict) -> dict:
         "{{contacto_nombre}}":           ct["nombre"],
         "{{contacto_telefono}}":         ct["telefono"],
         "{{contacto_email}}":            ct["email"],
-        # Garantía de seriedad
-        "{{garantia_seriedad}}":         data.get("tipo_garantia_seriedad", ""),
         # Cronograma
         "{{fecha_publicacion_sicep}}":   _fmt_fecha(cr["publicacion_sicep"]),
         "{{fecha_limite_consultas}}":    _fmt_fecha_hora(cr["limite_consultas"]),

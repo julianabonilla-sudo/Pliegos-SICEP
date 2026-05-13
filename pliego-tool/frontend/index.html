@@ -230,7 +230,6 @@
       <div class="card-title">Variables de la convocatoria</div>
       <div class="form-grid">
         <label><span>Código convocatoria</span><input id="f-codigo" placeholder="CP-BIAC2026-003"/></label>
-        <label><span>Garantía de seriedad</span><input id="f-garantia-seriedad" placeholder="Póliza / garantía bancaria…"/></label>
         <label><span>Inicio período contrato</span><input type="date" id="f-periodo-inicio"/></label>
         <label><span>Fin período contrato</span><input type="date" id="f-periodo-fin"/></label>
         <label class="form-full">
@@ -420,7 +419,6 @@ function iniciarEnBlanco() {
 // ── Cargar datos extraídos en el formulario ──────────────────────────────────
 function cargarDatos(d) {
   set("f-codigo",          d.codigo_convocatoria || "");
-  set("f-garantia-seriedad", d.tipo_garantia_seriedad || "");
   set("f-periodo-inicio",  d.periodo_contrato_inicio || "");
   set("f-periodo-fin",     d.periodo_contrato_fin || "");
   set("f-mes-indexacion",  d.mes_indexacion || "");
@@ -626,7 +624,7 @@ async function generarPliego() {
       email:    get("f-contacto-email"),
     },
     requiere_garantia_seriedad: true,
-    tipo_garantia_seriedad: get("f-garantia-seriedad"),
+    tipo_garantia_seriedad: "",
     productos: productos.map(p => ({
       numero:                    p.numero,
       modalidad_suministro:      p.modalidad_suministro,
