@@ -140,6 +140,7 @@
     .toast.ok  { background: var(--green); }
     .toast.err { background: var(--red); }
     .toast.inf { background: var(--accent); }
+    .toast.warn { background: var(--amber); }
 
     .loading { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
     .spinner { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
@@ -328,6 +329,8 @@ function goStep(n) {
   if (n === 4 && currentStep === 3) {
     const err = validarPeriodoVsProductos();
     if (err) { toast(err, "err"); return; }
+    const warn = verificarCoberturaProductos();
+    if (warn) toast(`⚠ ${warn}`, "warn");
   }
   document.querySelectorAll(".step-section").forEach(s => s.classList.remove("active"));
   document.getElementById(`step-${n}`).classList.add("active");
@@ -352,6 +355,35 @@ function validarPeriodoVsProductos() {
     if (p.duracion_fin > fin)
       return `Producto ${p.numero}: fin (${p.duracion_fin}) supera el período del contrato (${fin}).`;
   }
+  return null;
+}
+
+// ── Warning: ¿los productos cubren todo el período del contrato? ─────────────
+function verificarCoberturaProductos() {
+  const ini = get("f-periodo-inicio");
+  const fin = get("f-periodo-fin");
+  if (!ini || !fin || productos.length === 0) return null;
+
+  const intervals = productos
+    .filter(p => p.duracion_inicio && p.duracion_fin)
+    .map(p => [p.duracion_inicio, p.duracion_fin])
+    .sort((a, b) => a[0].localeCompare(b[0]));
+
+  if (intervals.length === 0) return null;
+
+  if (intervals[0][0] > ini)
+    return `El período del contrato inicia el ${ini} pero el primer producto arranca el ${intervals[0][0]}. Queda sin cubrir.`;
+
+  let coverEnd = intervals[0][1];
+  for (let i = 1; i < intervals.length; i++) {
+    if (intervals[i][0] > coverEnd)
+      return `Hay un período sin cobertura entre ${coverEnd} y ${intervals[i][0]}.`;
+    if (intervals[i][1] > coverEnd) coverEnd = intervals[i][1];
+  }
+
+  if (coverEnd < fin)
+    return `El período del contrato termina el ${fin} pero los productos solo cubren hasta el ${coverEnd}.`;
+
   return null;
 }
 

@@ -84,7 +84,8 @@ REEMPLAZOS_TEXTO = [
     # Fechas embebidas en párrafos
     ("el 2 de junio de 2026 a las 15:00 horas",      "el {{fecha_audiencia_publica}}"),
     ("hasta el día 23 de junio de 2026",             "hasta el día {{fecha_max_formalizacion}}"),
-    # Sección 5.4: dos menciones de la fecha límite de oferta
+    # Sección 5.4: tres menciones de la fecha límite de oferta
+    ("a más tardar el 20 de mayo de 2026",           "a más tardar el {{fecha_limite_oferta_dia}}"),
     ("a las 17:00 horas del 20 de mayo de 2026",     "a las {{fecha_limite_oferta_hora}}"),
     ("hasta las 17:00 horas del día 20 de mayo de 2026", "hasta {{fecha_limite_oferta}}"),
     # Headers de metodología (se vuelven dinámicos según los productos)

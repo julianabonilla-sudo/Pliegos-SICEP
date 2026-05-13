@@ -302,6 +302,7 @@ def _construir_marcadores(data: dict) -> dict:
         "{{fecha_pliegos_definitivos}}": _fmt_fecha(cr["pliegos_definitivos"]),
         "{{fecha_limite_oferta}}":       _fmt_fecha_hora(cr["limite_oferta"]),
         "{{fecha_limite_oferta_hora}}":  _fmt_hora_del_dia(cr["limite_oferta"]),
+        "{{fecha_limite_oferta_dia}}":   _fmt_fecha(cr["limite_oferta"]),
         "{{fecha_habilitados_asic}}":    _fmt_fecha(cr["habilitados_asic"]),
         "{{fecha_audiencia_publica}}":   _fmt_fecha_hora(cr["audiencia_publica"]),
         "{{fecha_max_formalizacion}}":   _fmt_fecha(cr["max_formalizacion"]),
