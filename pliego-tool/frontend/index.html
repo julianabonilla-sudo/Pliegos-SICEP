@@ -237,6 +237,22 @@
           <span>Mes de indexación <small style="font-weight:400;color:var(--muted)">(mes base para actualización de precios — único en toda la convocatoria)</small></span>
           <input id="f-mes-indexacion" placeholder="ej: marzo de 2026"/>
         </label>
+        <!-- Tipo de pliego -->
+        <label class="form-full">
+          <span>Tipo de pliego</span>
+          <div class="met-selector" style="margin-top:4px;">
+            <div class="met-btn active-anual" id="btn-tipo-definitivos" onclick="setTipoPliego('definitivos')">Definitivos</div>
+            <div class="met-btn" id="btn-tipo-preliminares" onclick="setTipoPliego('preliminares')">Preliminares</div>
+          </div>
+        </label>
+        <!-- Garantía de cumplimiento -->
+        <label class="form-full">
+          <span>Garantía de cumplimiento <small style="font-weight:400;color:var(--muted)">(aplica a secciones 8.1, 8.2 y minuta de oferta)</small></span>
+          <div class="met-selector" style="margin-top:4px;">
+            <div class="met-btn active-anual" id="btn-grnt-pagare-garantia" onclick="setGarantiaCumplimiento('pagare_garantia')">Pagaré + Garantía bancaria</div>
+            <div class="met-btn" id="btn-grnt-pagare" onclick="setGarantiaCumplimiento('pagare')">Solo pagaré</div>
+          </div>
+        </label>
       </div>
     </div>
 
@@ -305,9 +321,15 @@
 const API = "http://localhost:8000";
 let currentStep = 1;
 let productos = [];
+let tipoPliego = "definitivos";
+let garantiaCumplimientoTipo = "pagare_garantia";
 
 // ── Navegación ──────────────────────────────────────────────────────────────
 function goStep(n) {
+  if (n === 4 && currentStep === 3) {
+    const err = validarPeriodoVsProductos();
+    if (err) { toast(err, "err"); return; }
+  }
   document.querySelectorAll(".step-section").forEach(s => s.classList.remove("active"));
   document.getElementById(`step-${n}`).classList.add("active");
   document.querySelectorAll(".step-item").forEach((item, i) => {
@@ -317,6 +339,38 @@ function goStep(n) {
   });
   currentStep = n;
   if (n === 4) renderResumen();
+}
+
+// ── Validación período vs productos ─────────────────────────────────────────
+function validarPeriodoVsProductos() {
+  const ini = get("f-periodo-inicio");
+  const fin = get("f-periodo-fin");
+  if (!ini || !fin) return null;
+  for (const p of productos) {
+    if (!p.duracion_inicio || !p.duracion_fin) continue;
+    if (p.duracion_inicio < ini)
+      return `Producto ${p.numero}: inicio (${p.duracion_inicio}) es anterior al período del contrato (${ini}).`;
+    if (p.duracion_fin > fin)
+      return `Producto ${p.numero}: fin (${p.duracion_fin}) supera el período del contrato (${fin}).`;
+  }
+  return null;
+}
+
+// ── Tipo de pliego / garantía ────────────────────────────────────────────────
+function setTipoPliego(tipo) {
+  tipoPliego = tipo;
+  ["definitivos","preliminares"].forEach(t => {
+    document.getElementById(`btn-tipo-${t}`)
+      .className = "met-btn" + (t === tipo ? " active-anual" : "");
+  });
+}
+
+function setGarantiaCumplimiento(tipo) {
+  garantiaCumplimientoTipo = tipo;
+  const ids = { pagare_garantia: "btn-grnt-pagare-garantia", pagare: "btn-grnt-pagare" };
+  Object.entries(ids).forEach(([t, id]) => {
+    document.getElementById(id).className = "met-btn" + (t === tipo ? " active-anual" : "");
+  });
 }
 
 // ── Toast ────────────────────────────────────────────────────────────────────
@@ -370,6 +424,8 @@ function cargarDatos(d) {
   set("f-periodo-inicio",  d.periodo_contrato_inicio || "");
   set("f-periodo-fin",     d.periodo_contrato_fin || "");
   set("f-mes-indexacion",  d.mes_indexacion || "");
+  if (d.tipo_pliego) setTipoPliego(d.tipo_pliego);
+  if (d.garantia_cumplimiento_tipo) setGarantiaCumplimiento(d.garantia_cumplimiento_tipo);
 
   const ct = d.contacto || {};
   set("f-contacto-nombre", ct.nombre  || "");
@@ -518,9 +574,11 @@ function renderResumen() {
   el.innerHTML = `
     <div class="summary-grid" style="margin-bottom:16px;">
       <div class="summary-row"><div class="key">Código</div><div class="val">${get("f-codigo") || "—"}</div></div>
+      <div class="summary-row"><div class="key">Tipo</div><div class="val" style="text-transform:capitalize;">${tipoPliego}</div></div>
       <div class="summary-row"><div class="key">Período</div><div class="val">${get("f-periodo-inicio")} → ${get("f-periodo-fin")}</div></div>
       <div class="summary-row"><div class="key">Contacto</div><div class="val">${get("f-contacto-nombre") || "—"}</div></div>
       <div class="summary-row"><div class="key">N° productos</div><div class="val">${productos.length}</div></div>
+      <div class="summary-row"><div class="key">Garantía cumplimiento</div><div class="val">${garantiaCumplimientoTipo === "pagare_garantia" ? "Pagaré + Garantía bancaria" : "Solo pagaré"}</div></div>
       <div class="summary-row"><div class="key">Audiencia</div><div class="val">${fmt(get("cr-audiencia"))}</div></div>
       <div class="summary-row"><div class="key">Límite oferta</div><div class="val">${fmt(get("cr-oferta"))}</div></div>
     </div>
@@ -546,10 +604,12 @@ async function generarPliego() {
     entidad:      "BIA ENERGY SAS ESP",
     nit_entidad:  "901.588.412-3",
     objeto_contrato: "Suministro de energía y potencia eléctrica con destino al mercado regulado de BIA ENERGY",
-    codigo_convocatoria:     get("f-codigo"),
-    periodo_contrato_inicio: get("f-periodo-inicio"),
-    periodo_contrato_fin:    get("f-periodo-fin"),
-    mes_indexacion:          get("f-mes-indexacion"),
+    tipo_pliego:                 tipoPliego,
+    garantia_cumplimiento_tipo:  garantiaCumplimientoTipo,
+    codigo_convocatoria:         get("f-codigo"),
+    periodo_contrato_inicio:     get("f-periodo-inicio"),
+    periodo_contrato_fin:        get("f-periodo-fin"),
+    mes_indexacion:              get("f-mes-indexacion"),
     cronograma: {
       publicacion_sicep:   get("cr-sicep"),
       limite_consultas:    get("cr-consultas"),

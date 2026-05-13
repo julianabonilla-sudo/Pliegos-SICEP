@@ -47,6 +47,8 @@ Responde SOLO con un objeto JSON válido, sin texto adicional, sin markdown.
 
 ESQUEMA REQUERIDO:
 {
+  "tipo_pliego": "definitivos | preliminares",
+  "garantia_cumplimiento_tipo": "pagare | pagare_garantia — usa 'pagare_garantia' si el texto incluye la sección 'Adicionalmente...' con garantía bancaria además del pagaré",
   "codigo_convocatoria": "string",
   "periodo_contrato_inicio": "YYYY-MM-DD",
   "periodo_contrato_fin": "YYYY-MM-DD",

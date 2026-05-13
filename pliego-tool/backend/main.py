@@ -61,8 +61,10 @@ class PliegoData(BaseModel):
     mes_indexacion: str              # Ej: "marzo de 2026" — único para toda la convocatoria
     cronograma: Cronograma
     contacto: Contacto
+    tipo_pliego: str = "definitivos"          # "definitivos" | "preliminares"
     requiere_garantia_seriedad: bool = True
     tipo_garantia_seriedad: str
+    garantia_cumplimiento_tipo: str = "pagare_garantia"  # "pagare" | "pagare_garantia"
     # Productos (1..N)
     productos: list[Producto]
 

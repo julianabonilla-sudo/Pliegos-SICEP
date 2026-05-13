@@ -36,6 +36,19 @@ def _mes_anio(iso: str) -> str:
     except Exception:
         return iso
 
+def _mes_anio_hoy() -> str:
+    """Mes y año actual para la portada del documento."""
+    now = datetime.now()
+    return f"{MESES[now.month].capitalize()} {now.year}"
+
+def _fmt_hora_del_dia(iso: str) -> str:
+    """'2026-05-20T17:00' → '17:00 horas del 20 de mayo de 2026'"""
+    try:
+        dt = datetime.fromisoformat(iso.replace("T", " "))
+        return f"{dt.strftime('%H:%M')} horas del {dt.day} de {MESES[dt.month]} de {dt.year}"
+    except Exception:
+        return iso
+
 
 # ── Reemplazo de marcadores (nivel párrafo) ───────────────────────────────────
 
@@ -264,15 +277,21 @@ def _construir_marcadores(data: dict) -> dict:
     metod_mensual_header = (_fmt_lista_productos(mensual) + ":") if mensual else ""
     metod_anual_header   = (_fmt_lista_productos(anual)   + ":") if anual   else ""
 
+    tipo_pliego = data.get("tipo_pliego", "definitivos").lower()
+
     return {
+        # Tipo de pliego
+        "{{tipo_pliego}}":               tipo_pliego,
+        "{{tipo_pliego_upper}}":         tipo_pliego.upper(),
+        "{{tipo_pliego_cap}}":           tipo_pliego.capitalize(),
         # Identificación
         "{{codigo_convocatoria}}":       data["codigo_convocatoria"],
         "{{periodo_inicio}}":            _fmt_fecha(data["periodo_contrato_inicio"]),
         "{{periodo_fin}}":               _fmt_fecha(data["periodo_contrato_fin"]),
         # Mes de indexación (único para toda la convocatoria)
         "{{mes_indexacion}}":            data.get("mes_indexacion", ""),
-        # Portada
-        "{{mes_publicacion}}":           _mes_anio(cr["publicacion_sicep"]),
+        # Portada: mes en que se crean los pliegos (fecha actual)
+        "{{mes_publicacion}}":           _mes_anio_hoy(),
         # Contacto
         "{{contacto_nombre}}":           ct["nombre"],
         "{{contacto_telefono}}":         ct["telefono"],
@@ -284,6 +303,7 @@ def _construir_marcadores(data: dict) -> dict:
         "{{fecha_limite_consultas}}":    _fmt_fecha_hora(cr["limite_consultas"]),
         "{{fecha_pliegos_definitivos}}": _fmt_fecha(cr["pliegos_definitivos"]),
         "{{fecha_limite_oferta}}":       _fmt_fecha_hora(cr["limite_oferta"]),
+        "{{fecha_limite_oferta_hora}}":  _fmt_hora_del_dia(cr["limite_oferta"]),
         "{{fecha_habilitados_asic}}":    _fmt_fecha(cr["habilitados_asic"]),
         "{{fecha_audiencia_publica}}":   _fmt_fecha_hora(cr["audiencia_publica"]),
         "{{fecha_max_formalizacion}}":   _fmt_fecha(cr["max_formalizacion"]),
@@ -292,6 +312,65 @@ def _construir_marcadores(data: dict) -> dict:
         "{{metod_mensual_header}}":      metod_mensual_header,
         "{{metod_anual_header}}":        metod_anual_header,
     }
+
+
+# ── Garantía de cumplimiento: pagaré vs pagaré+garantía ─────────────────────
+
+def _manejar_garantia_cumplimiento(doc: Document, data: dict):
+    """
+    Si garantia_cumplimiento_tipo == 'pagare': elimina las secciones
+    'Adicionalmente...' (garantía bancaria) en 8.1, 8.2 y minuta.
+    Si es 'pagare_garantia': solo limpia los marcadores (mantiene el texto).
+    """
+    tipo = data.get("garantia_cumplimiento_tipo", "pagare_garantia")
+
+    INI_FIN_PARES = [
+        ("{{garantia_extra_vendedor_inicio}}",          "{{garantia_extra_vendedor_fin}}"),
+        ("{{garantia_extra_comprador_inicio}}",         "{{garantia_extra_comprador_fin}}"),
+        ("{{garantia_extra_vendedor_minuta_inicio}}",   "{{garantia_extra_vendedor_minuta_fin}}"),
+        ("{{garantia_extra_comprador_minuta_inicio}}", "{{garantia_extra_comprador_minuta_fin}}"),
+    ]
+
+    parrafos = list(doc.paragraphs)
+
+    for m_ini, m_fin in INI_FIN_PARES:
+        idx_ini = idx_fin = None
+        for i, p in enumerate(parrafos):
+            if idx_ini is None and m_ini in p.text:
+                idx_ini = i
+            elif idx_ini is not None and idx_fin is None and m_fin in p.text:
+                idx_fin = i
+
+        if idx_ini is None or idx_fin is None:
+            continue
+
+        if tipo == "pagare":
+            for p in parrafos[idx_ini:idx_fin + 1]:
+                padre = p._element.getparent()
+                if padre is not None:
+                    padre.remove(p._element)
+        else:
+            for idx in (idx_ini, idx_fin):
+                padre = parrafos[idx]._element.getparent()
+                if padre is not None:
+                    padre.remove(parrafos[idx]._element)
+
+
+# ── Actualización de tabla de contenido (requiere Word instalado) ────────────
+
+def _actualizar_toc(output_path: str):
+    """Abre el documento en Word para actualizar TOC y números de página."""
+    try:
+        import win32com.client
+        word = win32com.client.Dispatch("Word.Application")
+        word.Visible = False
+        doc_word = word.Documents.Open(os.path.abspath(output_path))
+        doc_word.TablesOfContents(1).Update()
+        doc_word.Save()
+        doc_word.Close()
+        word.Quit()
+    except Exception:
+        pass  # Word no disponible; el usuario puede presionar Ctrl+A, F9 al abrir
 
 
 # ── Función principal ──────────────────────────────────────────────────────────
@@ -317,11 +396,15 @@ def generar_pliego(data: dict, output_path: str):
         # 4. Manejar la sección de metodología libre (inserta/limpia párrafos)
         _manejar_seccion_libre(doc, productos)
 
+        # 5. Garantía de cumplimiento: pagaré solo o pagaré + garantía bancaria
+        _manejar_garantia_cumplimiento(doc, data)
+
     else:
         marcadores = _construir_marcadores(data)
         doc = _crear_doc_desde_cero(data, marcadores)
 
     doc.save(output_path)
+    _actualizar_toc(output_path)
 
 
 # ── Fallback: documento desde cero (cuando no hay plantilla) ──────────────────
