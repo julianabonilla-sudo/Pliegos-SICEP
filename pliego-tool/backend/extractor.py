@@ -50,6 +50,7 @@ ESQUEMA REQUERIDO:
   "codigo_convocatoria": "string",
   "periodo_contrato_inicio": "YYYY-MM-DD",
   "periodo_contrato_fin": "YYYY-MM-DD",
+  "mes_indexacion": "string — ej: 'marzo de 2026' (mes base para actualización de precios, aparece en la sección PRECIOS)",
   "cronograma": {
     "publicacion_sicep": "YYYY-MM-DD",
     "limite_consultas": "YYYY-MM-DDTHH:MM",

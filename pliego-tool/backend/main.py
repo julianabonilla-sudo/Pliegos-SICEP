@@ -58,6 +58,7 @@ class PliegoData(BaseModel):
     codigo_convocatoria: str
     periodo_contrato_inicio: str
     periodo_contrato_fin: str
+    mes_indexacion: str              # Ej: "marzo de 2026" — único para toda la convocatoria
     cronograma: Cronograma
     contacto: Contacto
     requiere_garantia_seriedad: bool = True

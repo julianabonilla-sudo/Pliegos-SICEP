@@ -233,6 +233,10 @@
         <label><span>Garantía de seriedad</span><input id="f-garantia-seriedad" placeholder="Póliza / garantía bancaria…"/></label>
         <label><span>Inicio período contrato</span><input type="date" id="f-periodo-inicio"/></label>
         <label><span>Fin período contrato</span><input type="date" id="f-periodo-fin"/></label>
+        <label class="form-full">
+          <span>Mes de indexación <small style="font-weight:400;color:var(--muted)">(mes base para actualización de precios — único en toda la convocatoria)</small></span>
+          <input id="f-mes-indexacion" placeholder="ej: marzo de 2026"/>
+        </label>
       </div>
     </div>
 
@@ -365,6 +369,7 @@ function cargarDatos(d) {
   set("f-garantia-seriedad", d.tipo_garantia_seriedad || "");
   set("f-periodo-inicio",  d.periodo_contrato_inicio || "");
   set("f-periodo-fin",     d.periodo_contrato_fin || "");
+  set("f-mes-indexacion",  d.mes_indexacion || "");
 
   const ct = d.contacto || {};
   set("f-contacto-nombre", ct.nombre  || "");
@@ -544,6 +549,7 @@ async function generarPliego() {
     codigo_convocatoria:     get("f-codigo"),
     periodo_contrato_inicio: get("f-periodo-inicio"),
     periodo_contrato_fin:    get("f-periodo-fin"),
+    mes_indexacion:          get("f-mes-indexacion"),
     cronograma: {
       publicacion_sicep:   get("cr-sicep"),
       limite_consultas:    get("cr-consultas"),

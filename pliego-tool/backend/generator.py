@@ -1,19 +1,21 @@
+from copy import deepcopy
 from docx import Document
-from docx.shared import Pt, RGBColor
+from docx.oxml import OxmlElement
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from datetime import datetime
 import os
 
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "templates", "plantilla_base.docx")
+MAX_PROD_PLANTILLA = 6   # número de tablas de producto en la plantilla base
+NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+
+# ── Formateo de fechas ─────────────────────────────────────────────────────────
+
+MESES = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio",
+         "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
 def _fmt_fecha(iso: str) -> str:
-    """'2026-04-24' → '24 de abril de 2026'"""
-    MESES = [
-        "", "enero","febrero","marzo","abril","mayo","junio",
-        "julio","agosto","septiembre","octubre","noviembre","diciembre"
-    ]
     try:
         d = datetime.fromisoformat(iso.replace("T", " ").split(" ")[0])
         return f"{d.day} de {MESES[d.month]} de {d.year}"
@@ -21,48 +23,31 @@ def _fmt_fecha(iso: str) -> str:
         return iso
 
 def _fmt_fecha_hora(iso: str) -> str:
-    """'2026-04-30T18:00' → '30 de abril de 2026 a las 18:00 horas'"""
-    MESES = [
-        "", "enero","febrero","marzo","abril","mayo","junio",
-        "julio","agosto","septiembre","octubre","noviembre","diciembre"
-    ]
     try:
         dt = datetime.fromisoformat(iso.replace("T", " "))
         return f"{dt.day} de {MESES[dt.month]} de {dt.year} a las {dt.strftime('%H:%M')} horas"
     except Exception:
         return iso
 
-def _metodologia_texto(producto: dict) -> str:
-    met = producto.get("metodologia_evaluacion", "libre")
-    if met == "mensual":
-        return (
-            "Evaluación mensual: el precio ofertado puede ser diferente para cada mes "
-            "del producto ($/kWh, hasta dos decimales). BIA ENERGY presentará oferta de "
-            "reserva mensual y evaluará cada mes de manera independiente."
-        )
-    elif met == "anual":
-        return (
-            "Evaluación anual: el precio ofertado debe ser único para el año del "
-            "producto ($/kWh, hasta dos decimales). BIA ENERGY presentará oferta de "
-            "reserva para el periodo solicitado y evaluará las ofertas de manera anual."
-        )
-    else:
-        return producto.get(
-            "descripcion_metodologia_libre",
-            "Metodología definida por BIA ENERGY conforme al pliego de condiciones."
-        )
+def _mes_anio(iso: str) -> str:
+    try:
+        d = datetime.fromisoformat(iso.split("T")[0])
+        return f"{MESES[d.month].capitalize()} {d.year}"
+    except Exception:
+        return iso
 
-# ── Reemplazo de marcadores en párrafos y tablas ───────────────────────────────
+
+# ── Reemplazo de marcadores (nivel párrafo) ───────────────────────────────────
 
 def _reemplazar_en_parrafos(parrafos, marcadores: dict):
     for p in parrafos:
-        texto_completo = "".join(r.text for r in p.runs)
+        texto = "".join(r.text for r in p.runs)
+        nuevo = texto
         for clave, valor in marcadores.items():
-            if clave in texto_completo:
-                texto_completo = texto_completo.replace(clave, str(valor))
-        # Escribir el resultado en el primer run y limpiar los demás
-        if p.runs:
-            p.runs[0].text = texto_completo
+            if clave in nuevo:
+                nuevo = nuevo.replace(clave, str(valor))
+        if nuevo != texto and p.runs:
+            p.runs[0].text = nuevo
             for r in p.runs[1:]:
                 r.text = ""
 
@@ -76,14 +61,326 @@ def _reemplazar_en_doc(doc: Document, marcadores: dict):
         _reemplazar_en_parrafos(seccion.header.paragraphs, marcadores)
         _reemplazar_en_parrafos(seccion.footer.paragraphs, marcadores)
 
-# ── Construcción de la tabla de productos ─────────────────────────────────────
 
-def _agregar_tabla_productos(doc: Document, productos: list):
-    doc.add_heading("Descripción de los Productos a Contratar", level=2)
+# ── Reemplazo de marcadores a nivel XML (para clones de tablas) ───────────────
 
+def _reemplazar_en_xml(elemento, marcadores: dict):
+    """Reemplaza marcadores {{...}} en todos los nodos <w:t> del elemento XML."""
+    for t_node in elemento.iter(f"{{{NS_W}}}t"):
+        if t_node.text:
+            for clave, valor in marcadores.items():
+                if clave in t_node.text:
+                    t_node.text = t_node.text.replace(clave, str(valor))
+
+
+# ── Generación dinámica de tablas de productos ────────────────────────────────
+
+def _marcadores_producto(prod: dict) -> dict:
+    """Construye el dict de marcadores para un producto, usando la base {{prod_1_...}}."""
+    garantias = (
+        f"COMPRADOR: {prod.get('garantia_comprador', '')}\n"
+        f"VENDEDOR: {prod.get('garantia_vendedor', '')}"
+    )
+    return {
+        "{{prod_1_modalidad}}": prod["modalidad_suministro"],
+        "{{prod_1_duracion}}":  (
+            f"{_fmt_fecha(prod['duracion_inicio'])} "
+            f"a {_fmt_fecha(prod['duracion_fin'])}"
+        ),
+        "{{prod_1_tamano}}":    f"{prod['tamano_mwh']:,.0f}",
+        "{{prod_1_indexador}}": prod["indexador"],
+        "{{prod_1_garantias}}": garantias,
+    }
+
+def _generar_tablas_productos(doc: Document, productos: list):
+    """
+    Reemplaza las N tablas de producto fijas de la plantilla por tablas dinámicas,
+    una por cada producto de la convocatoria (funciona para cualquier N).
+
+    Debe llamarse ANTES de _reemplazar_en_doc para que los marcadores {{prod_1_...}}
+    aún estén presentes en el XML base.
+    """
+    tablas = list(doc.tables)
+    n_template = min(MAX_PROD_PLANTILLA, len(tablas) - 1)
+
+    if n_template == 0:
+        return
+
+    # Guardar copia del XML de la primera tabla de producto (tiene marcadores {{prod_1_...}})
+    primera_prod_el = tablas[1]._element
+    tabla_base_xml  = deepcopy(primera_prod_el)
+
+    # Registrar el elemento anterior como punto de inserción
+    elemento_ref = primera_prod_el.getprevious()
+    padre        = primera_prod_el.getparent()
+
+    # Eliminar TODAS las tablas de producto de la plantilla
+    for i in range(n_template, 0, -1):
+        if i < len(tablas):
+            tablas[i]._element.getparent().remove(tablas[i]._element)
+
+    # Insertar las N nuevas tablas en orden (insertamos de la última a la primera
+    # usando addnext sobre el mismo elemento de referencia)
+    for n in range(len(productos), 0, -1):
+        prod = productos[n - 1]
+
+        nueva_xml = deepcopy(tabla_base_xml)
+
+        # Reemplazar marcadores {{prod_1_...}} con los datos de este producto
+        marcadores_prod = _marcadores_producto(prod)
+        # También actualizar el título de la tabla
+        marcadores_prod["RESUMEN DEL PRODUCTO 1"] = f"RESUMEN DEL PRODUCTO {n}"
+        _reemplazar_en_xml(nueva_xml, marcadores_prod)
+
+        if elemento_ref is not None:
+            elemento_ref.addnext(nueva_xml)
+        else:
+            padre.insert(0, nueva_xml)
+
+
+# ── Sección de metodología libre ──────────────────────────────────────────────
+
+def _insertar_parrafo_despues(ref_el, texto: str):
+    """Inserta un párrafo simple con `texto` inmediatamente después de ref_el."""
+    nuevo_p = OxmlElement("w:p")
+    nuevo_r = OxmlElement("w:r")
+    nuevo_t = OxmlElement("w:t")
+    nuevo_t.text = texto
+    nuevo_t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    nuevo_r.append(nuevo_t)
+    nuevo_p.append(nuevo_r)
+    ref_el.addnext(nuevo_p)
+    return nuevo_p
+
+def _manejar_seccion_libre(doc: Document, productos: list):
+    """
+    Reemplaza {{metod_libre_seccion}} con la descripción de productos de metodología libre.
+    Si no hay productos libres, limpia el placeholder.
+    """
+    libre_prods = [p for p in productos if p.get("metodologia_evaluacion") == "libre"]
+
+    placeholder = None
+    for p in doc.paragraphs:
+        if "{{metod_libre_seccion}}" in p.text:
+            placeholder = p
+            break
+
+    if placeholder is None:
+        return
+
+    if not libre_prods:
+        # Limpiar el placeholder
+        if placeholder.runs:
+            placeholder.runs[0].text = ""
+            for r in placeholder.runs[1:]:
+                r.text = ""
+        return
+
+    # Hay productos libres: construir la sección
+    nums = _fmt_lista_productos([p["numero"] for p in libre_prods])
+    header = f"{nums}:"
+
+    if placeholder.runs:
+        placeholder.runs[0].text = header
+        for r in placeholder.runs[1:]:
+            r.text = ""
+    else:
+        placeholder.add_run(header)
+
+    ultimo_el = placeholder._element
+    for prod in libre_prods:
+        desc = prod.get("descripcion_metodologia_libre") or (
+            "Metodología definida por BIA ENERGY conforme al pliego de condiciones."
+        )
+        nuevo_p = _insertar_parrafo_despues(ultimo_el, desc)
+        ultimo_el = nuevo_p
+
+
+# ── Eliminación de secciones de metodología vacías ───────────────────────────
+
+def _manejar_secciones_metodologia(doc: Document, productos: list):
+    """
+    Elimina del documento la sección de metodología mensual o anual completa
+    cuando no hay productos que la usen.
+
+    Debe ejecutarse ANTES de _reemplazar_en_doc porque necesita encontrar
+    los párrafos por sus marcadores {{metod_mensual_header}} / {{metod_anual_header}}.
+
+    La sección mensual abarca desde {{metod_mensual_header}} hasta (sin incluir)
+    {{metod_anual_header}}.
+    La sección anual abarca desde {{metod_anual_header}} hasta (sin incluir)
+    {{metod_libre_seccion}}.
+    """
+    mensual = [p for p in productos if p.get("metodologia_evaluacion") == "mensual"]
+    anual   = [p for p in productos if p.get("metodologia_evaluacion") == "anual"]
+
+    if mensual and anual:
+        return  # Ambas secciones tienen productos — nada que eliminar
+
+    # Snapshot de párrafos (los índices se mantienen aunque eliminemos elementos)
+    parrafos = list(doc.paragraphs)
+
+    idx_mensual = idx_anual = idx_libre = None
+    for i, p in enumerate(parrafos):
+        t = p.text
+        if idx_mensual is None and "{{metod_mensual_header}}" in t:
+            idx_mensual = i
+        elif idx_anual is None and "{{metod_anual_header}}" in t:
+            idx_anual = i
+        elif idx_libre is None and "{{metod_libre_seccion}}" in t:
+            idx_libre = i
+
+    # Eliminar sección mensual completa (header + descripción)
+    if not mensual and idx_mensual is not None and idx_anual is not None:
+        for p in parrafos[idx_mensual:idx_anual]:
+            p._element.getparent().remove(p._element)
+
+    # Eliminar sección anual completa (header + descripción)
+    if not anual and idx_anual is not None and idx_libre is not None:
+        for p in parrafos[idx_anual:idx_libre]:
+            p._element.getparent().remove(p._element)
+
+
+# ── Construcción de marcadores planos ─────────────────────────────────────────
+
+def _fmt_lista_productos(numeros: list) -> str:
+    """[1,2,3] → 'Productos 1, 2 y 3' | [1] → 'Producto 1'"""
+    if not numeros:
+        return ""
+    nums = [str(n) for n in numeros]
+    if len(nums) == 1:
+        return f"Producto {nums[0]}"
+    return "Productos " + ", ".join(nums[:-1]) + " y " + nums[-1]
+
+def _construir_marcadores(data: dict) -> dict:
+    cr = data["cronograma"]
+    ct = data["contacto"]
+    productos = data["productos"]
+
+    # Agrupar productos por metodología para los headers
+    mensual = [p["numero"] for p in productos if p.get("metodologia_evaluacion") == "mensual"]
+    anual   = [p["numero"] for p in productos if p.get("metodologia_evaluacion") == "anual"]
+
+    metod_mensual_header = (_fmt_lista_productos(mensual) + ":") if mensual else ""
+    metod_anual_header   = (_fmt_lista_productos(anual)   + ":") if anual   else ""
+
+    return {
+        # Identificación
+        "{{codigo_convocatoria}}":       data["codigo_convocatoria"],
+        "{{periodo_inicio}}":            _fmt_fecha(data["periodo_contrato_inicio"]),
+        "{{periodo_fin}}":               _fmt_fecha(data["periodo_contrato_fin"]),
+        # Mes de indexación (único para toda la convocatoria)
+        "{{mes_indexacion}}":            data.get("mes_indexacion", ""),
+        # Portada
+        "{{mes_publicacion}}":           _mes_anio(cr["publicacion_sicep"]),
+        # Contacto
+        "{{contacto_nombre}}":           ct["nombre"],
+        "{{contacto_telefono}}":         ct["telefono"],
+        "{{contacto_email}}":            ct["email"],
+        # Garantía de seriedad
+        "{{garantia_seriedad}}":         data.get("tipo_garantia_seriedad", ""),
+        # Cronograma
+        "{{fecha_publicacion_sicep}}":   _fmt_fecha(cr["publicacion_sicep"]),
+        "{{fecha_limite_consultas}}":    _fmt_fecha_hora(cr["limite_consultas"]),
+        "{{fecha_pliegos_definitivos}}": _fmt_fecha(cr["pliegos_definitivos"]),
+        "{{fecha_limite_oferta}}":       _fmt_fecha_hora(cr["limite_oferta"]),
+        "{{fecha_habilitados_asic}}":    _fmt_fecha(cr["habilitados_asic"]),
+        "{{fecha_audiencia_publica}}":   _fmt_fecha_hora(cr["audiencia_publica"]),
+        "{{fecha_max_formalizacion}}":   _fmt_fecha(cr["max_formalizacion"]),
+        "{{fecha_max_registro_asic}}":   _fmt_fecha(cr["max_registro_asic"]),
+        # Headers de metodología (dinámicos según los productos)
+        "{{metod_mensual_header}}":      metod_mensual_header,
+        "{{metod_anual_header}}":        metod_anual_header,
+    }
+
+
+# ── Función principal ──────────────────────────────────────────────────────────
+
+def generar_pliego(data: dict, output_path: str):
+    productos = data["productos"]
+
+    if os.path.exists(TEMPLATE_PATH):
+        doc = Document(TEMPLATE_PATH)
+
+        # 1. Generar tablas de productos dinámicamente
+        #    (los marcadores {{prod_1_...}} deben estar intactos en el XML base)
+        _generar_tablas_productos(doc, productos)
+
+        # 2. Eliminar secciones de metodología que no aplican
+        #    (debe ir ANTES del reemplazo para poder encontrar los marcadores)
+        _manejar_secciones_metodologia(doc, productos)
+
+        # 3. Construir marcadores planos y reemplazarlos en todo el documento
+        marcadores = _construir_marcadores(data)
+        _reemplazar_en_doc(doc, marcadores)
+
+        # 4. Manejar la sección de metodología libre (inserta/limpia párrafos)
+        _manejar_seccion_libre(doc, productos)
+
+    else:
+        marcadores = _construir_marcadores(data)
+        doc = _crear_doc_desde_cero(data, marcadores)
+
+    doc.save(output_path)
+
+
+# ── Fallback: documento desde cero (cuando no hay plantilla) ──────────────────
+
+def _crear_doc_desde_cero(data: dict, marcadores: dict) -> Document:
+    doc = Document()
+    cr = data["cronograma"]
+    ct = data["contacto"]
+
+    titulo = doc.add_heading("PLIEGO DE CONDICIONES DEFINITIVOS", level=1)
+    titulo.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    doc.add_paragraph(f"Código de convocatoria: {data['codigo_convocatoria']}")
+    doc.add_paragraph(
+        f"Período a contratar: {marcadores['{{periodo_inicio}}']} "
+        f"a {marcadores['{{periodo_fin}}']}"
+    )
+
+    doc.add_heading("1. Objeto", level=2)
+    doc.add_paragraph(
+        f"La presente convocatoria tiene por objeto: {data.get('objeto_contrato', '')}."
+    )
+
+    doc.add_heading("2. Funcionario encargado", level=2)
+    doc.add_paragraph(f"Nombre: {ct['nombre']}")
+    doc.add_paragraph(f"Teléfono: {ct['telefono']}")
+    doc.add_paragraph(f"Correo: {ct['email']}")
+
+    doc.add_heading("3. Cronograma del proceso", level=2)
+    tabla_cr = doc.add_table(rows=1, cols=2)
+    tabla_cr.style = "Table Grid"
+    enc = tabla_cr.rows[0].cells
+    enc[0].text = "Actividad"
+    enc[1].text = "Fecha"
+    for celda in enc:
+        celda.paragraphs[0].runs[0].bold = True
+
+    for actividad, clave in [
+        ("Publicación aviso SICEP",        "{{fecha_publicacion_sicep}}"),
+        ("Límite consultas a pliegos",      "{{fecha_limite_consultas}}"),
+        ("Pliegos definitivos",             "{{fecha_pliegos_definitivos}}"),
+        ("Límite entrega oferta",           "{{fecha_limite_oferta}}"),
+        ("Remisión habilitados al ASIC",    "{{fecha_habilitados_asic}}"),
+        ("Audiencia pública",               "{{fecha_audiencia_publica}}"),
+        ("Máxima formalización de ofertas", "{{fecha_max_formalizacion}}"),
+        ("Máximo registro ante ASIC",       "{{fecha_max_registro_asic}}"),
+    ]:
+        f = tabla_cr.add_row()
+        f.cells[0].text = actividad
+        f.cells[1].text = marcadores.get(clave, clave)
+
+    doc.add_paragraph("")
+    doc.add_heading("4. Garantía de seriedad de la oferta", level=2)
+    doc.add_paragraph(data.get("tipo_garantia_seriedad", ""))
+
+    doc.add_heading("5. Productos a contratar", level=2)
     for prod in productos:
-        doc.add_heading(f"Producto {prod['numero']}", level=3)
-
+        n = prod["numero"]
+        doc.add_heading(f"Producto {n}", level=3)
         tabla = doc.add_table(rows=1, cols=2)
         tabla.style = "Table Grid"
 
@@ -94,116 +391,14 @@ def _agregar_tabla_productos(doc: Document, productos: list):
             fila.cells[0].paragraphs[0].runs[0].bold = True
 
         _fila("Modalidad de suministro", prod["modalidad_suministro"])
-        _fila("Duración del suministro",
+        _fila("Duración",
               f"{_fmt_fecha(prod['duracion_inicio'])} a {_fmt_fecha(prod['duracion_fin'])}")
-        _fila("Tamaño del negocio jurídico (MWh)", f"{prod['tamano_mwh']:,.0f}")
+        _fila("Tamaño (MWh)", f"{prod['tamano_mwh']:,.0f}")
         _fila("Indexador", prod["indexador"])
-        _fila("Metodología de evaluación", _metodologia_texto(prod))
-        _fila("Garantía vendedor", prod["garantia_vendedor"])
-        _fila("Garantía comprador", prod["garantia_comprador"])
-
-        doc.add_paragraph("")  # espacio entre productos
-
-# ── Función principal ──────────────────────────────────────────────────────────
-
-def generar_pliego(data: dict, output_path: str):
-    cr = data["cronograma"]
-    ct = data["contacto"]
-
-    # Marcadores planos para reemplazo en plantilla
-    marcadores = {
-        "{{entidad}}":               data["entidad"],
-        "{{nit_entidad}}":           data["nit_entidad"],
-        "{{objeto_contrato}}":       data["objeto_contrato"],
-        "{{codigo_convocatoria}}":   data["codigo_convocatoria"],
-        "{{periodo_inicio}}":        _fmt_fecha(data["periodo_contrato_inicio"]),
-        "{{periodo_fin}}":           _fmt_fecha(data["periodo_contrato_fin"]),
-        "{{contacto_nombre}}":       ct["nombre"],
-        "{{contacto_telefono}}":     ct["telefono"],
-        "{{contacto_email}}":        ct["email"],
-        "{{garantia_seriedad}}":     data.get("tipo_garantia_seriedad", ""),
-        # Cronograma
-        "{{fecha_publicacion_sicep}}":   _fmt_fecha(cr["publicacion_sicep"]),
-        "{{fecha_limite_consultas}}":    _fmt_fecha_hora(cr["limite_consultas"]),
-        "{{fecha_pliegos_definitivos}}": _fmt_fecha(cr["pliegos_definitivos"]),
-        "{{fecha_limite_oferta}}":       _fmt_fecha_hora(cr["limite_oferta"]),
-        "{{fecha_habilitados_asic}}":    _fmt_fecha(cr["habilitados_asic"]),
-        "{{fecha_audiencia_publica}}":   _fmt_fecha_hora(cr["audiencia_publica"]),
-        "{{fecha_max_formalizacion}}":   _fmt_fecha(cr["max_formalizacion"]),
-        "{{fecha_max_registro_asic}}":   _fmt_fecha(cr["max_registro_asic"]),
-    }
-
-    # Cargar plantilla o crear documento nuevo si no existe
-    if os.path.exists(TEMPLATE_PATH):
-        doc = Document(TEMPLATE_PATH)
-        _reemplazar_en_doc(doc, marcadores)
-    else:
-        doc = _crear_doc_desde_cero(data, marcadores)
-
-    # Agregar tabla de productos
-    _agregar_tabla_productos(doc, data["productos"])
-
-    doc.save(output_path)
-
-
-# ── Documento desde cero (cuando no hay plantilla) ────────────────────────────
-
-def _crear_doc_desde_cero(data: dict, marcadores: dict) -> Document:
-    doc = Document()
-    cr  = data["cronograma"]
-    ct  = data["contacto"]
-
-    # Encabezado
-    titulo = doc.add_heading("PLIEGO DE CONDICIONES DEFINITIVOS", level=1)
-    titulo.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-    doc.add_paragraph(f"Código de convocatoria: {data['codigo_convocatoria']}")
-    doc.add_paragraph(
-        f"Período a contratar: {marcadores['{{periodo_inicio}}']} "
-        f"a {marcadores['{{periodo_fin}}']}"
-    )
-
-    # Objeto
-    doc.add_heading("1. Objeto", level=2)
-    doc.add_paragraph(
-        f"La presente convocatoria tiene por objeto: {data['objeto_contrato']}."
-    )
-
-    # Contacto
-    doc.add_heading("2. Funcionario encargado", level=2)
-    doc.add_paragraph(f"Nombre: {ct['nombre']}")
-    doc.add_paragraph(f"Teléfono: {ct['telefono']}")
-    doc.add_paragraph(f"Correo: {ct['email']}")
-
-    # Cronograma
-    doc.add_heading("3. Cronograma del proceso", level=2)
-    tabla_cr = doc.add_table(rows=1, cols=2)
-    tabla_cr.style = "Table Grid"
-    encabezado = tabla_cr.rows[0].cells
-    encabezado[0].text = "Actividad"
-    encabezado[1].text = "Fecha"
-    for celda in encabezado:
-        celda.paragraphs[0].runs[0].bold = True
-
-    filas_cr = [
-        ("Publicación aviso SICEP",           marcadores["{{fecha_publicacion_sicep}}"]),
-        ("Límite consultas a pliegos",         marcadores["{{fecha_limite_consultas}}"]),
-        ("Publicación pliegos definitivos",    marcadores["{{fecha_pliegos_definitivos}}"]),
-        ("Límite entrega oferta",              marcadores["{{fecha_limite_oferta}}"]),
-        ("Remisión habilitados al ASIC",       marcadores["{{fecha_habilitados_asic}}"]),
-        ("Audiencia pública",                  marcadores["{{fecha_audiencia_publica}}"]),
-        ("Máxima formalización de ofertas",    marcadores["{{fecha_max_formalizacion}}"]),
-        ("Máximo registro ante ASIC",          marcadores["{{fecha_max_registro_asic}}"]),
-    ]
-    for actividad, fecha in filas_cr:
-        f = tabla_cr.add_row()
-        f.cells[0].text = actividad
-        f.cells[1].text = fecha
-
-    doc.add_paragraph("")
-
-    # Garantía de seriedad
-    doc.add_heading("4. Garantía de seriedad de la oferta", level=2)
-    doc.add_paragraph(data.get("tipo_garantia_seriedad", ""))
+        met = prod.get("metodologia_evaluacion", "libre")
+        _fila("Metodología", prod.get("descripcion_metodologia_libre", met))
+        _fila("Garantía vendedor", prod.get("garantia_vendedor", ""))
+        _fila("Garantía comprador", prod.get("garantia_comprador", ""))
+        doc.add_paragraph("")
 
     return doc
